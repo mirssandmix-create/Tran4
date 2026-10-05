@@ -7,8 +7,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PIL import Image, ImageDraw, ImageFont
 
-from gm.model import TextBlock, TextLine
-from gm.typeset import Renderer, clean_and_place
+from pcm.model import TextBlock, TextLine
+from pcm.typeset import Renderer, clean_and_place
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 os.makedirs(OUT, exist_ok=True)

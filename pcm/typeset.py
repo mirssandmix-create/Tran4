@@ -20,7 +20,7 @@ from PIL import Image, ImageDraw
 from .config import resource_path
 from .model import Box, TextBlock
 
-LOG = logging.getLogger("ghostmanga.typeset")
+LOG = logging.getLogger("poomcatomanga.typeset")
 
 # Chrome canvas limit is 32767px per side; keep rendering chunks well below.
 MAX_RENDER_CHUNK = 14000
@@ -306,7 +306,7 @@ class Renderer:
         self._tab = None
         self._profile = None
         self._lock = asyncio.Lock()
-        with open(resource_path("gm/render.js"), "r", encoding="utf-8") as f:
+        with open(resource_path("pcm/render.js"), "r", encoding="utf-8") as f:
             self._js = f.read()
 
     async def _ensure(self):
@@ -316,7 +316,7 @@ class Renderer:
             from . import cdp as safe
             LOG.debug("starting text renderer (headless Chrome)")
             if self._profile is None:   # one profile reused across restarts
-                self._profile = tempfile.mkdtemp(prefix="gm5_render_")
+                self._profile = tempfile.mkdtemp(prefix="pcm_render_")
             self._browser = await asyncio.wait_for(
                 cdp_util.start_async(headless=True, user_data_dir=self._profile), 60)
             self._tab = self._browser.main_tab

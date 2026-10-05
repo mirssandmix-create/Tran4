@@ -36,7 +36,7 @@ from .ocr import LensOCR
 from .translate import Translator
 from .typeset import Renderer, clean_and_place, encode_output
 
-LOG = logging.getLogger("ghostmanga")
+LOG = logging.getLogger("poomcatomanga")
 PIPELINE_VERSION = "5.0-r3"  # bump to invalidate cached translations
 
 IMAGE_MAGIC = (b"\xff\xd8\xff", b"\x89PNG", b"GIF8", b"BM")
@@ -185,13 +185,13 @@ class Session:
         self.reqs: "OrderedDict[str, tuple]" = OrderedDict()
         self.ua = ""
         self._profile_tmp = None
-        self.tmpdir = tempfile.mkdtemp(prefix="gm5_session_")
+        self.tmpdir = tempfile.mkdtemp(prefix="pcm_session_")
         self._files = 0
         self._folders: dict[str, tuple] = {}
         self._save_lock = threading.Lock()
         self._last_chip = None
         self._err_origin = None
-        with open(resource_path("gm/page.js"), "r", encoding="utf-8") as f:
+        with open(resource_path("pcm/page.js"), "r", encoding="utf-8") as f:
             self.page_js = f.read().replace("__GM_MIN_SIDE__", str(int(self.s.min_image_side)))
         # if the app exits before the worker thread finishes, don't leave temp files behind
         import atexit
@@ -332,15 +332,15 @@ class Session:
         if self.s.keep_browser_profile:
             profile = os.path.join(local_data_dir(), "chrome-profile")
         else:
-            profile = self._profile_tmp = tempfile.mkdtemp(prefix="gm5_profile_")
-        headless = os.environ.get("GM5_HEADLESS") == "1"  # automated tests only
+            profile = self._profile_tmp = tempfile.mkdtemp(prefix="pcm_profile_")
+        headless = os.environ.get("PCM_HEADLESS") == "1"  # automated tests only
         try:
             self.browser = await asyncio.wait_for(cdp_util.start_async(user_data_dir=profile, headless=headless), 60)
         except Exception as e:
             if not self.s.keep_browser_profile:
                 raise
             LOG.warning("ใช้โปรไฟล์เดิมไม่ได้ (%s) — เปิดแบบชั่วคราวแทน", e)
-            profile = self._profile_tmp = tempfile.mkdtemp(prefix="gm5_profile_")
+            profile = self._profile_tmp = tempfile.mkdtemp(prefix="pcm_profile_")
             self.browser = await asyncio.wait_for(cdp_util.start_async(user_data_dir=profile, headless=headless), 60)
 
     async def _ensure_prepared(self, tab):
@@ -593,9 +593,9 @@ class Session:
         done, total = sum(c.done for c in chs), sum(c.total for c in chs)
         busy, failed = sum(c.busy for c in chs), sum(c.failed for c in chs)
         if total == 0:
-            text = "Ghost Manga: กำลังหารูป…"
+            text = "PoomCatoManga: กำลังหารูป…"
         else:
-            text = f"Ghost Manga: แปลแล้ว {done}/{total}"
+            text = f"PoomCatoManga: แปลแล้ว {done}/{total}"
             if busy:
                 text += f" • กำลังแปล {busy}"
             if failed:

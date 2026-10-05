@@ -6,7 +6,7 @@ if not exist ".venv\Scripts\python.exe" (
   ".venv\Scripts\python.exe" -m pip install -r requirements.txt
 )
 ".venv\Scripts\python.exe" -m pip install pyinstaller
-".venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean ghostmanga5.spec
+".venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean poomcatomanga.spec
 echo.
-echo เสร็จแล้ว: dist\GhostManga5\GhostManga5.exe
+echo เสร็จแล้ว: dist\PoomCatoManga\PoomCatoManga.exe
 pause

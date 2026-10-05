@@ -13,9 +13,9 @@ import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from gm.config import Settings
-from gm.model import TextBlock
-from gm.translate import Translator
+from pcm.config import Settings
+from pcm.model import TextBlock
+from pcm.translate import Translator
 
 SEEN = []
 

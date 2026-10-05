@@ -11,10 +11,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PIL import Image
 
-from gm.config import Settings
-from gm.ocr import LensOCR
-from gm.translate import Translator
-from gm.typeset import Renderer, clean_and_place
+from pcm.config import Settings
+from pcm.ocr import LensOCR
+from pcm.translate import Translator
+from pcm.typeset import Renderer, clean_and_place
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "out")

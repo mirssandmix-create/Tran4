@@ -1,13 +1,13 @@
-# PyInstaller spec for Ghost Manga 5 (one-folder build: starts fast, nothing to unpack each launch)
+# PyInstaller spec for PoomCatoManga (one-folder build: starts fast, nothing to unpack each launch)
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 hidden = (collect_submodules("chrome_lens_py") + collect_submodules("mycdp")
           + collect_submodules("seleniumbase.undetected.cdp_driver"))
-datas = [("gm/page.js", "gm"), ("gm/render.js", "gm"), ("icon.ico", "."), ("logo.png", ".")]
+datas = [("pcm/page.js", "pcm"), ("pcm/render.js", "pcm"), ("icon.ico", "."), ("logo.png", ".")]
 datas += collect_data_files("ttkbootstrap")
 
 a = Analysis(
-    ["ghostmanga5.py"],
+    ["poomcatomanga.py"],
     pathex=[],
     binaries=[],
     datas=datas,
@@ -26,9 +26,9 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="GhostManga5",
+    name="PoomCatoManga",
     icon="icon.ico",
     console=False,
     upx=False,
 )
-coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="GhostManga5")
+coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="PoomCatoManga")

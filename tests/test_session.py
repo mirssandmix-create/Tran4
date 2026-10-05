@@ -15,10 +15,10 @@ import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ["GM5_HEADLESS"] = os.environ.get("GM5_HEADLESS", "1")
+os.environ["PCM_HEADLESS"] = os.environ.get("PCM_HEADLESS", "1")
 
-from gm.config import Settings
-from gm.session import Session
+from pcm.config import Settings
+from pcm.session import Session
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SITE = os.path.join(HERE, "site")
@@ -71,7 +71,7 @@ def main(seconds, engine, page="index.html", settle=6):
     time.sleep(1)
     # what does each translated <img> show now vs. what it was translated from?
     import asyncio, json
-    from gm import cdp as safe
+    from pcm import cdp as safe
 
     async def probe():
         tab = sess._tab

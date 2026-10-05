@@ -1,4 +1,4 @@
-// Ghost Manga 5 typesetter. Defines window.__gmRender in a headless Chrome page;
+// PoomCatoManga typesetter. Defines window.__gmRender in a headless Chrome page;
 // Python calls it through CDP Runtime.evaluate(awaitPromise=true).
 // Chrome gives us correct Thai shaping (stacked vowels/tone marks) and
 // dictionary-based word breaking through Intl.Segmenter.

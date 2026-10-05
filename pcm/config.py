@@ -1,29 +1,46 @@
-"""User settings: stored as JSON in %APPDATA%\\GhostManga5\\settings.json."""
+"""User settings: stored as JSON in %APPDATA%\\PoomCatoManga\\settings.json."""
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 import time
 from dataclasses import asdict, dataclass, field, fields
 
-APP_NAME = "Ghost Manga 5"
+APP_NAME = "PoomCatoManga"
 APP_VERSION = "5.0.0"
+APP_AUTHOR = "PoomCato"
+DATA_DIR_NAME = "PoomCatoManga"
+_OLD_DATA_DIR_NAME = "GhostManga5"   # data folders of the pre-rename builds
+
+
+def _data_dir(base: str) -> str:
+    path = os.path.join(base, DATA_DIR_NAME)
+    old = os.path.join(base, _OLD_DATA_DIR_NAME)
+    if not os.path.exists(path) and os.path.isdir(old):
+        try:                             # carry over settings / cache / browser login in one go
+            os.rename(old, path)
+        except OSError:                  # in use by an old copy that is still running
+            pass
+    os.makedirs(path, exist_ok=True)
+    # settings must survive the rename even if the folder move wasn't possible
+    new_settings, old_settings = os.path.join(path, "settings.json"), os.path.join(old, "settings.json")
+    if not os.path.exists(new_settings) and os.path.exists(old_settings):
+        try:
+            shutil.copy2(old_settings, new_settings)
+        except OSError:
+            pass
+    return path
 
 
 def app_data_dir() -> str:
-    base = os.environ.get("APPDATA") or os.path.expanduser("~")
-    path = os.path.join(base, "GhostManga5")
-    os.makedirs(path, exist_ok=True)
-    return path
+    return _data_dir(os.environ.get("APPDATA") or os.path.expanduser("~"))
 
 
 def local_data_dir() -> str:
-    """Machine-local data (browser profile, image cache): %LOCALAPPDATA%\\GhostManga5."""
-    base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~")
-    path = os.path.join(base, "GhostManga5")
-    os.makedirs(path, exist_ok=True)
-    return path
+    """Machine-local data (browser profile, image cache): %LOCALAPPDATA%\\PoomCatoManga."""
+    return _data_dir(os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~"))
 
 
 def resource_path(name: str) -> str:
@@ -52,21 +69,23 @@ SOURCE_LANGS = [
     ("en", "อังกฤษ"),
 ]
 
-# Translation engines: (id, Thai label)
+# Translation engines: (id, Thai label, one-line hint shown under the picker)
 ENGINES = [
-    ("google", "Google แปลฟรี (ไม่ต้องตั้งค่า)"),
-    ("local", "AI ในเครื่อง ฟรี (LM Studio / Ollama)"),
-    ("gemini", "Google Gemini (API key)"),
-    ("claude", "Claude (API key)"),
-    ("openai", "OpenAI-compatible อื่นๆ (API key)"),
+    ("google", "Google แปล (ฟรี)", "ใช้ได้ทันที ไม่ต้องตั้งค่า"),
+    ("local", "AI ในเครื่อง (ฟรี)", "ต้องเปิด LM Studio หรือ Ollama และกด Start Server"),
+    ("gemini", "Gemini", "ต้องใส่ API key ในหน้าตั้งค่า"),
+    ("claude", "Claude", "ต้องใส่ API key ในหน้าตั้งค่า"),
+    ("openai", "OpenAI / อื่นๆ", "ต้องใส่ URL และ API key ในหน้าตั้งค่า"),
 ]
 
 ENGINE_DEFAULTS = {
     "local": {"base_url": "http://localhost:1234/v1", "model": ""},
-    "gemini": {"base_url": "https://generativelanguage.googleapis.com/v1beta", "model": "gemini-2.5-flash"},
+    "gemini": {"base_url": "https://generativelanguage.googleapis.com/v1beta", "model": "gemini-3.8-flash"},
     "claude": {"base_url": "", "model": "claude-opus-5-5"},
-    "openai": {"base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
+    "openai": {"base_url": "https://api.openai.com/v1", "model": "gpt-6-luna"},
 }
+
+THEMES = [("dark", "มืด"), ("light", "สว่าง")]
 
 
 @dataclass
@@ -96,9 +115,12 @@ class Settings:
     concurrency: int = 3
     timeout_sec: int = 90
     min_image_side: int = 250          # skip icons/avatars smaller than this
-    # saving
+    # saving (hidden unless the user switches it on in Settings)
+    save_enabled: bool = False
     save_dir: str = ""
     auto_save: bool = False
+    # look
+    theme: str = "dark"
     # browser
     keep_browser_profile: bool = True  # remember logins / Cloudflare clearance between runs
     extra: dict = field(default_factory=dict)

@@ -5,13 +5,13 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ["GM5_HEADLESS"] = "1"
+os.environ["PCM_HEADLESS"] = "1"
 
 import ttkbootstrap as ttk
 
-from gm.config import Settings, app_data_dir
+from pcm.config import Settings, app_data_dir
 from test_session import OUT, serve
-import ghostmanga5
+import poomcatomanga
 
 SETTINGS = os.path.join(app_data_dir(), "settings.json")
 
@@ -21,9 +21,10 @@ def main():
     if os.path.exists(SETTINGS):
         shutil.copy2(SETTINGS, backup)
     httpd = serve()
-    root = ttk.Window(themename="superhero")
-    app = ghostmanga5.App(root)
-    app.url.set(os.environ.get("GM5_TEST_URL", "http://127.0.0.1:8765/index.html"))
+    root = ttk.Window()
+    app = poomcatomanga.App(root)
+    app.url.set(os.environ.get("PCM_TEST_URL", "http://127.0.0.1:8765/index.html"))
+    app.save_enabled.set(True)      # saving is hidden/off by default; the test turns it on
     app.save_dir.set(OUT)
     app.auto_save.set(True)
     app.settings.keep_browser_profile = False

@@ -9,10 +9,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PIL import Image, ImageDraw, ImageFont
 
-from gm.config import Settings
-from gm.ocr import LensOCR, plan_tiles
-from gm.translate import Translator
-from gm.typeset import Renderer, clean_and_place, encode_output
+from pcm.config import Settings
+from pcm.ocr import LensOCR, plan_tiles
+from pcm.translate import Translator
+from pcm.typeset import Renderer, clean_and_place, encode_output
 
 JA = "C:/Windows/Fonts/YuGothB.ttc"
 KO = "C:/Windows/Fonts/malgunbd.ttf"

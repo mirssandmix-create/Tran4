@@ -1,4 +1,4 @@
-// Ghost Manga 5 page agent. Injected at document start (Page.addScriptToEvaluateOnNewDocument)
+// PoomCatoManga page agent. Injected at document start (Page.addScriptToEvaluateOnNewDocument)
 // and into already-open pages. Python polls __gm.scan() and pushes results with __gm.apply().
 // Every call that targets an element carries the document token and the source/version the
 // job was made for, so late results never land on a different image or a newer page.

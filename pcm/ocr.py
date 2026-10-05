@@ -22,7 +22,7 @@ from PIL import Image
 
 from .model import TextBlock, TextLine, poly_box, union_box
 
-LOG = logging.getLogger("ghostmanga.ocr")
+LOG = logging.getLogger("poomcatomanga.ocr")
 
 TOP_TO_BOTTOM = 2
 LENS_MAX_AREA = 1_500_000

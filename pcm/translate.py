@@ -22,7 +22,7 @@ import httpx
 from .config import Settings
 from .model import TextBlock
 
-LOG = logging.getLogger("ghostmanga.translate")
+LOG = logging.getLogger("poomcatomanga.translate")
 
 LANG_NAMES = {
     "th": "Thai", "en": "English", "ja": "Japanese", "ko": "Korean", "zh": "Chinese",

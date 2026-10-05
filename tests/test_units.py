@@ -9,11 +9,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from gm.model import TextBlock, TextLine
-from gm.ocr import LensOCR, plan_tiles
-from gm.session import _chapter_path
-from gm.translate import untranslated
-from gm.typeset import clean_and_place
+from pcm.model import TextBlock, TextLine
+from pcm.ocr import LensOCR, plan_tiles
+from pcm.session import _chapter_path
+from pcm.translate import untranslated
+from pcm.typeset import clean_and_place
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "out")
@@ -90,7 +90,7 @@ def small_units():
                 _chapter_path("/chapter/abc/3") == _chapter_path("/chapter/abc/12") == "/chapter/abc")
     ok &= check("chapter path ignores query", _chapter_path("/read/ch-5?page=2") == _chapter_path("/read/ch-5?page=9"))
     ok &= check("chapter path keeps chapter change", _chapter_path("/manga/x/chapter-5") != _chapter_path("/manga/x/chapter-6"))
-    import ghostmanga5 as app
+    import poomcatomanga as app
     n = app.App._normalize_url
     ok &= check("url: host:port gets https", n("mangasite.com:8443/read/1") == "https://mangasite.com:8443/read/1")
     ok &= check("url: localhost gets http", n("localhost:8000/x") == "http://localhost:8000/x")
