@@ -1,0 +1,9 @@
+seleniumbase==4.55.0
+mycdp==1.4.0
+chrome-lens-py==3.5.3
+protobuf==7.36.2
+httpx==0.28.1
+pillow==12.3.0
+numpy==2.5.3
+ttkbootstrap==2.2.3
+anthropic==1.11.0
