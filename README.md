@@ -49,11 +49,15 @@
 
 ถ้า AI ตอบไม่ได้ (ไม่ได้เปิด / key ผิด / โควตาหมด) โปรแกรมจะใช้ Google แปลแทนอัตโนมัติ
 
-### AI ในเครื่องด้วย LM Studio
-1. ติดตั้ง **LM Studio** จาก lmstudio.ai (การ์ด AMD ใช้ runtime แบบ Vulkan)
-2. ดาวน์โหลดโมเดลที่เก่งภาษาไทย เช่น **Gemma 3 12B** (Q4_K_M ~7–8 GB) หรือค้นหา **Typhoon**
-3. แท็บ **Developer** → โหลดโมเดล → **Start Server**
+### AI ในเครื่องด้วย LM Studio (หรือ Bionic)
+1. ติดตั้ง **LM Studio** หรือ **Bionic** จาก lmstudio.ai (การ์ด AMD ใช้ runtime แบบ Vulkan)
+2. ดาวน์โหลดโมเดลที่เก่งภาษาไทย เช่น **Gemma 4 12B** (Q4_K_M 7.56 GB ใส่การ์ดจอ 12 GB ได้ทั้งตัว)
+3. โหลดโมเดล แล้วเปิดเซิร์ฟเวอร์ — LM Studio: แท็บ **Developer** → **Start Server** / Bionic: เมนู **Local Model API**
+   หรือใช้คำสั่ง: `lms load google/gemma-4-12b --gpu max -c 16384` แล้ว `lms server start --port 1234`
 4. ใน PoomCatoManga: ตัวแปล "AI ในเครื่อง (ฟรี)" → ⚙ ตั้งค่า → "ทดสอบการเชื่อมต่อ"
+   (ช่องชื่อโมเดลเว้นว่างได้ = ใช้ตัวที่โหลดอยู่ หรือพิมพ์ชื่อสั้นๆ เช่น `Gemma 4 12B`)
+
+ความเร็วโดยประมาณ: **ราว 6–8 วินาทีต่อหน้า** กับการ์ดจอ 12 GB + Gemma 4 12B เมื่อปิดสวิตช์ **"ให้ AI คิดก่อนตอบ"** (⚙ ตั้งค่า → AI ในเครื่อง) — เปิดสวิตช์นี้แล้วแม่นขึ้นนิดหน่อย แต่ช้าลงเกือบ 10 เท่า
 
 ## ข้อจำกัด
 
@@ -65,6 +69,8 @@
 
 - การตั้งค่า: `%APPDATA%\PoomCatoManga\settings.json` (API key เก็บแบบไม่เข้ารหัส อย่าแชร์ไฟล์นี้)
 - แคชรูป, โปรไฟล์ Chrome, `log.txt`: `%LOCALAPPDATA%\PoomCatoManga\`
+  - `log.txt` เขียนต่อท้ายทุกครั้งที่เปิดโปรแกรม (ของรอบก่อนไม่หาย) ถ้าเปิดโปรแกรมซ้อนกัน 2 ตัว ตัวที่สองจะเขียน `log-2.txt` แทน
+  - เมื่อ log ใหญ่เกิน 2 MB ของเก่าจะถูกย้ายไปไว้ที่ `log-old.txt` ตอนเปิดโปรแกรมครั้งถัดไป
 
 ## สำหรับนักพัฒนา
 
@@ -74,6 +80,7 @@ build.bat               สร้าง dist\PoomCatoManga\PoomCatoManga.exe
 tools\make_icons.py     สร้างไอคอน/โลโก้ใหม่
 tests\                  ทดสอบกับเว็บจำลองในเครื่อง:
                         python tests\make_site.py แล้ว python tests\test_session.py
+                        (เว็บจำลองใช้พอร์ต 8765 — เปลี่ยนได้ด้วย set PCM_TEST_PORT=8770)
 ```
 
 ## เครดิต

@@ -1,4 +1,5 @@
 """Smoke test: erase vertical Japanese text in a synthetic bubble and typeset Thai."""
+import asyncio
 import os
 import sys
 import time
@@ -44,21 +45,37 @@ def make_page():
     return img, [b1, b2]
 
 
-if __name__ == "__main__":
+def dark(img, box) -> int:
+    return sum(img.crop(box).convert("L").histogram()[:100])
+
+
+async def main():
     img, blocks = make_page()
     img.save(os.path.join(OUT, "page_src.png"))
     t = time.time()
     cleaned, placements = clean_and_place(img, blocks)
     print("clean %.2fs" % (time.time() - t), placements)
     cleaned.save(os.path.join(OUT, "page_clean.png"))
-    r = Renderer()
+    assert len(placements) == len(blocks), placements
+    inner = (400, 258, 536, 600)   # inside the bubble, clear of its outline
+    assert dark(cleaned, inner) < dark(img, inner) // 10, "Japanese text not erased"
+    r = Renderer()   # every method is a coroutine; the renderer lives on this one event loop
     try:
         t = time.time()
-        out = r.render(cleaned, placements, "th")
+        out = await r.render(cleaned, placements, "th")
         print("render %.2fs" % (time.time() - t))
         t = time.time()
-        out2 = r.render(cleaned, placements, "th")
+        await r.render(cleaned, placements, "th")
         print("render (warm) %.2fs" % (time.time() - t))
-        out.save(os.path.join(OUT, "page_th.png"))
     finally:
-        r.close()
+        await r.close()
+    out.save(os.path.join(OUT, "page_th.png"))
+    assert out.size == img.size, (out.size, img.size)
+    for p in placements:   # Thai text was drawn in every box
+        box = tuple(int(v) for v in p["box"])
+        assert dark(out, box) > dark(cleaned, box) + 50, "nothing drawn for " + p["text"]
+    print("OK:", os.path.join(OUT, "page_th.png"))
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

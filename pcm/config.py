@@ -9,7 +9,7 @@ import time
 from dataclasses import asdict, dataclass, field, fields
 
 APP_NAME = "PoomCatoManga"
-APP_VERSION = "5.0.0"
+APP_VERSION = "5.0.1"
 APP_AUTHOR = "PoomCato"
 DATA_DIR_NAME = "PoomCatoManga"
 _OLD_DATA_DIR_NAME = "GhostManga5"   # data folders of the pre-rename builds
@@ -97,6 +97,7 @@ class Settings:
     # per-engine connection settings
     local_base_url: str = ENGINE_DEFAULTS["local"]["base_url"]
     local_model: str = ENGINE_DEFAULTS["local"]["model"]
+    local_thinking: bool = False        # reasoning models (Gemma 4, Qwen) ~9x slower with thinking on
     gemini_api_key: str = ""
     gemini_model: str = ENGINE_DEFAULTS["gemini"]["model"]
     claude_api_key: str = ""

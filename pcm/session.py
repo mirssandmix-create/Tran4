@@ -23,8 +23,9 @@ import shutil
 import tempfile
 import threading
 import time
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 import httpx
 from PIL import Image, ImageDraw
@@ -32,12 +33,14 @@ from PIL import Image, ImageDraw
 from . import cdp as safe
 from .cache import DiskCache
 from .config import Settings, local_data_dir, resource_path
+from .model import poly_box
 from .ocr import LensOCR
-from .translate import Translator
+from .translate import Translator, blank_story, untranslated
 from .typeset import Renderer, clean_and_place, encode_output
 
 LOG = logging.getLogger("poomcatomanga")
-PIPELINE_VERSION = "5.0-r3"  # bump to invalidate cached translations
+DETAIL = logging.getLogger("poomcatomanga.detail")   # log.txt only: the app's log panel leaves these out
+PIPELINE_VERSION = "5.0-r4"  # bump to invalidate cached translations
 
 IMAGE_MAGIC = (b"\xff\xd8\xff", b"\x89PNG", b"GIF8", b"BM")
 
@@ -75,6 +78,28 @@ def _safe_name(s: str, limit: int = 100) -> str:
     s = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', " ", s or "").strip(" .")
     s = re.sub(r"\s+", " ", s)
     return s[:limit].strip(" .") or "manga"
+
+
+def _clip(s: str, n: int = 100) -> str:
+    s = " ".join((s or "").split())
+    return s if len(s) <= n else s[:n - 1] + "…"
+
+
+def _ocr_text(b) -> str:
+    """Bubble text as the translator got it. Horizontal: rows split by '|'. Vertical: the text in
+    reading order, then every Lens fragment in Lens's own order at its centre x, top y (relative to
+    the bubble), so a wrong column order can be told apart from a wrong read."""
+    lines = [ln for ln in b.lines if ln.text.strip()]
+    if b.vertical and len(lines) > 1:
+        frags = []
+        for ln in lines:
+            x0, y0, x1, _ = poly_box(ln.poly)
+            frags.append(f"{''.join(ln.text.split())}@{int((x0 + x1) / 2 - b.box[0])},{int(y0 - b.box[1])}")
+        return f"{_clip(b.text)} [lens: {_clip(' '.join(frags), 200)}]"
+    parts = [ln.text.strip() for ln in lines]
+    if len(parts) > 1 and "".join("".join(parts).split()) == "".join(b.text.split()):
+        return _clip("|".join(parts))
+    return _clip(b.text)
 
 
 def _vision_image(img: Image.Image, blocks) -> bytes | None:
@@ -163,6 +188,19 @@ class Chapter:
     warned_frames: bool = False
     warned_empty: bool = False
     created: float = field(default_factory=time.monotonic)
+
+    @property
+    def label(self) -> str:
+        """Short name for log lines: pages of several chapters and tabs are translated interleaved.
+        A long title usually has the chapter number past the cut, so the URL's tail is used instead."""
+        title = " ".join(self.title.split())
+        if title and len(title) <= 40:
+            return title
+        u = urlsplit(self.url)
+        path = u.path.rstrip("/") + ("?" + u.query if u.query else "")
+        if path:
+            return path if len(path) <= 40 else "…" + path[-39:]
+        return _clip(title or self.url, 40)
 
 
 class Session:
@@ -263,6 +301,7 @@ class Session:
             self.loop.run_until_complete(self._main())
         except Exception as e:
             LOG.error("เกิดข้อผิดพลาดร้ายแรง: %s", e)
+            DETAIL.error("session", exc_info=True)
         finally:
             try:
                 pending = [t for t in asyncio.all_tasks(self.loop) if not t.done()]
@@ -285,6 +324,12 @@ class Session:
         self.translator = Translator(self.s)
         self.renderer = Renderer(self.s.font_family, bool(self.s.font_bold), int(self.s.min_font_px))
         self.http = httpx.AsyncClient(follow_redirects=True, timeout=25)
+        s = self.s
+        extra = {"local": f" url={s.local_base_url} thinking={'on' if s.local_thinking else 'off'}",
+                 "openai": f" url={s.openai_base_url}", "claude": f" effort={s.claude_effort}"}.get(s.engine, "")
+        DETAIL.info("เริ่มแปล: engine=%s model=%s%s ภาษา=%s→%s พร้อมกัน=%s ส่งภาพ=%s glossary=%d pipeline=%s",
+                    s.engine, getattr(s, s.engine + "_model", "") or "-", extra, s.source_lang, s.target_lang,
+                    s.concurrency, s.send_image_to_ai, len(s.glossary_pairs()), PIPELINE_VERSION)
         tasks = []
         try:
             LOG.info("กำลังเปิด Chrome…")
@@ -306,6 +351,7 @@ class Session:
             await self.stop_event.wait()
         except Exception as e:
             LOG.error("เริ่มทำงานไม่สำเร็จ: %s", e)
+            DETAIL.error("start", exc_info=True)
         finally:
             self.stop_event.set()
             for t in tasks:
@@ -662,6 +708,7 @@ class Session:
                 ch.failed += 1
                 ch.failed_jobs.append(job)
                 LOG.warning("รูปที่ %d แปลไม่สำเร็จ: %s", job.ord + 1, e)
+                DETAIL.warning("รูปที่ %d «%s»: %s", job.ord + 1, ch.label, type(e).__name__, exc_info=True)
                 if job.kind == "img" and self._live(job):
                     try:
                         await safe.evaluate(job.tab, "window.__gm && __gm.release(%s, %s)"
@@ -775,6 +822,47 @@ class Session:
             f.write(data)
         return path
 
+    def _log_page(self, job: Job, ch: Chapter, digest: str, blocks, engine, cached: bool,
+                  t_ocr: float, t_tr: float):
+        """What each bubble was read as, what it became and who translated it, one line per bubble
+        in log.txt, so a "wrong line" report can be traced to OCR (text, column order), the
+        translator (empty, still in the source language, Google stepping in) or the typesetting."""
+        try:
+            tgt = self.s.target_lang
+            empty = [b.id for b in blocks if not (b.translation or "").strip()]
+            same = [b.id for b in blocks if b.id not in empty and untranslated(b.text, b.translation, tgt)]
+            model = getattr(engine, "model", "")
+            by = Counter(getattr(b, "via", "") or "?" for b in blocks if b.id not in empty)
+            tally = [engine.name + (f" ({model})" if model else "") + f" {by.pop(engine.name, 0)}"]
+            tally += [f"{k} {n}" for k, n in sorted(by.items(), key=lambda kv: kv[0] != "google")]
+            if empty:
+                tally.append(f"ว่าง {len(empty)}")
+            head = [f"รูปที่ {job.ord + 1} [{digest[:8]}] «{ch.label}» "
+                    f"{getattr(blocks, 'lang', '') or '?'} {len(blocks)} ช่อง", *tally,
+                    f"OCR {t_ocr:.1f}s แปล {t_tr:.1f}s"]
+            if getattr(blocks, "partial", False):
+                head.append("OCR ไม่ครบ")
+            holes = getattr(blocks, "holes", False)
+            if holes:
+                head.append("ยังมีช่องที่แปลไม่ได้")
+            if same:
+                head.append("ยังเป็นต้นฉบับ: " + ",".join(same))
+            if not cached:
+                head.append("ไม่เก็บแคช")
+            lines = [" • ".join(head)]
+            for b in blocks:
+                if b.id in empty:
+                    tr = "(ว่าง: แปลไม่ได้)" if holes and blank_story(b.text, "") else "(ว่าง: คงต้นฉบับไว้)"
+                else:
+                    tr = f"{_clip(b.translation)} [{getattr(b, 'via', '') or '?'}]"
+                if b.id in same:
+                    tr += " (ยังเป็นต้นฉบับ)"
+                lines.append(f"  #{b.id} {b.lang or '?'}{'↓' if b.vertical else ''} @{int(b.box[0])},{int(b.box[1])} "
+                             f"{_ocr_text(b)} → {tr}")
+            DETAIL.info("%s", "\n".join(lines))
+        except Exception as e:   # a diagnostic must never cost a page
+            DETAIL.warning("log page: %s", e)
+
     async def _process(self, job: Job, ch: Chapter):
         loop = asyncio.get_running_loop()
         job.attempts += 1
@@ -792,30 +880,43 @@ class Session:
                 raw = await self._screenshot(job)
             img, digest = await loop.run_in_executor(None, _decode, raw)
         s = self.s
+        await self.translator.prepare()   # resolves the model (and engine) the key is made with
         engine_at_key = self.translator.engine.name
         key = self._cache_key(digest)
         out = await loop.run_in_executor(None, self.cache.get, key)
         if out is None:
+            t0 = time.monotonic()
             blocks = await self.ocr.read(img, s.source_lang, s.target_lang)
+            t_ocr = time.monotonic() - t0
             if not self._live(job):
                 raise _Away()
             if not blocks and getattr(blocks, "partial", False):
                 raise RuntimeError("อ่านตัวหนังสือในรูปนี้ได้ไม่ครบ (Google Lens ไม่ตอบบางส่วน)")
             if not blocks:
+                DETAIL.info("รูปที่ %d [%s] «%s» ไม่มีตัวหนังสือ • OCR %.1fs", job.ord + 1, digest[:8], ch.label, t_ocr)
                 out = b""  # no text: keep the original
             else:
                 vision = None
                 if s.send_image_to_ai and self.translator.engine.name != "google":
                     vision = await loop.run_in_executor(None, _vision_image, img, blocks)
+                engine, t0 = self.translator.engine, time.monotonic()
                 used = await self.translator.translate_page(blocks, s.source_lang, getattr(blocks, "lang", ""),
                                                             s.target_lang, vision)
+                # cached only when the engine and model the key was made for wrote it (LM Studio can swap
+                # the model mid-page), and nothing is missing
+                keep = (used == engine_at_key and key == self._cache_key(digest)
+                        and any(b.translation for b in blocks)
+                        and not getattr(blocks, "partial", False) and not getattr(blocks, "holes", False))
+                self._log_page(job, ch, digest, blocks, engine, keep, t_ocr, time.monotonic() - t0)
                 if not any(b.translation for b in blocks):
                     raise RuntimeError("ไม่ได้คำแปลกลับมา")
                 cleaned, placements = await loop.run_in_executor(None, clean_and_place, img, blocks)
                 final = await self.renderer.render(cleaned, placements, s.target_lang)
                 out, _mime = await loop.run_in_executor(None, encode_output, final)
-                if used == engine_at_key and not getattr(blocks, "partial", False):
+                if keep:
                     await loop.run_in_executor(None, self.cache.put, key, out)
+        else:
+            DETAIL.info("รูปที่ %d [%s] «%s» ใช้คำแปลเดิมจากแคช", job.ord + 1, digest[:8], ch.label)
         if not self._live(job):
             raise _Away()   # the result is cached on disk, so a revisit is instant
         stored_only = False

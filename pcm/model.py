@@ -23,6 +23,7 @@ class TextBlock:
     vertical: bool = False
     lang: str = ""
     translation: str = ""
+    via: str = ""   # who wrote .translation: engine name or "google"; "" = original art kept on purpose
 
     @property
     def width(self) -> float:

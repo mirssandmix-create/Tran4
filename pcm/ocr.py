@@ -35,6 +35,7 @@ _KANA_ANY = re.compile(r"[぀-ヿ]")
 _HAN = re.compile(r"[㐀-鿿]")
 _THAI = re.compile(r"[฀-๿]")
 _LATIN = re.compile(r"[A-Za-z]")
+_CJK_ONLY = re.compile(r"^[぀-ヿ㐀-鿿가-힯ᄀ-ᇿ\s]+$")
 
 
 def _patch_lens_quality():
@@ -51,8 +52,10 @@ def _patch_lens_quality():
 
 
 class OCRResult(list):
-    """List of TextBlocks plus a flag telling whether some tiles could not be read."""
+    """List of TextBlocks plus flags: some tiles could not be read (`partial`), some story
+    bubble is still untranslated after every fallback (`holes`, set by the translator)."""
     partial: bool = False
+    holes: bool = False
 
 
 @dataclass
@@ -194,6 +197,22 @@ def _separated(gray: np.ndarray, a: _Group, b: _Group, vertical: bool) -> bool:
     return bool((reach[:, -k:] & ink[:, -k:]).any())
 
 
+def _stacked(a: _Group, b: _Group, c: float) -> tuple[_Group, _Group] | None:
+    """A column of `a` and the column of `b` right above/below it: one column that Lens
+    returned as two paragraphs. Judged per column, not by the paragraph boxes (a short
+    column's neighbour reaches lower, and a bubble tucked under it is not its continuation)."""
+    best = None
+    for la in a.lines:
+        for lb in b.lines:
+            xov = min(la.box[2], lb.box[2]) - max(la.box[0], lb.box[0])
+            if xov <= 0.5 * min(la.box[2] - la.box[0], lb.box[2] - lb.box[0]):
+                continue
+            gap = max(lb.box[1] - la.box[3], la.box[1] - lb.box[3])
+            if gap <= 1.25 * c and (best is None or gap < best[0]):
+                best = (gap, la, lb)
+    return None if best is None else (_Group(lines=[best[1]]), _Group(lines=[best[2]]))
+
+
 def _should_merge(a: _Group, b: _Group, gray: np.ndarray) -> bool:
     if a.vertical != b.vertical:
         return False
@@ -201,14 +220,16 @@ def _should_merge(a: _Group, b: _Group, gray: np.ndarray) -> bool:
     bx0, by0, bx1, by1 = b.box
     ca, cb = a.char, b.char
     c = (ca + cb) / 2
+    stacked = None
     # cheap geometric rejects first
     if a.vertical:
         gap = max(bx0 - ax1, ax0 - bx1)
         if gap > 1.25 * c:
             return False
+        stacked = _stacked(a, b, c)
         ov = min(ay1, by1) - max(ay0, by0)
         short = min(ay1 - ay0, by1 - by0)
-        if ov < 0.25 * short and abs(ay0 - by0) > 1.5 * c:
+        if stacked is None and ov < 0.25 * short and abs(ay0 - by0) > 1.5 * c:
             return False
     else:
         gap = max(by0 - ay1, ay0 - by1)
@@ -221,7 +242,28 @@ def _should_merge(a: _Group, b: _Group, gray: np.ndarray) -> bool:
             return False
     if not (0.6 <= ca / max(cb, 1e-3) <= 1.67):
         return False
+    if stacked:   # the outline, if any, runs between the two halves of that column
+        return not _separated(gray, *stacked, False)
     return not _separated(gray, a, b, a.vertical)
+
+
+def _squarish(g: _Group) -> bool:
+    """One glyph (or two narrow ones): the writing direction Lens gives it is a guess."""
+    if len(g.lines) != 1 or len(g.lines[0].text.strip()) > 2:
+        return False
+    w, h = g.box[2] - g.box[0], g.box[3] - g.box[1]
+    return max(w, h) < 1.6 * max(min(w, h), 1e-3)
+
+
+def _follow_vertical(groups: list[_Group], gray: np.ndarray) -> None:
+    """A lone glyph Lens called horizontal joins the vertical column beside it."""
+    for g in groups:
+        if g.vertical or not _squarish(g):
+            continue
+        v = _Group(lines=[_Line(l.text, l.poly, l.box, True) for l in g.lines], vertical=True, lang=g.lang)
+        if any(o.vertical and _should_merge(v, o, gray) for o in groups):
+            g.lines, g.vertical = v.lines, True
+            g.invalidate()
 
 
 def _attach_furigana(groups: list[_Group]) -> list[_Group]:
@@ -252,6 +294,7 @@ def _attach_furigana(groups: list[_Group]) -> list[_Group]:
 def group_lines(paragraphs: list[_Group], gray: np.ndarray) -> list[_Group]:
     """Merge paragraphs into bubbles (union-find over nearby pairs only)."""
     groups = _attach_furigana([g for g in paragraphs if g.lines])
+    _follow_vertical(groups, gray)
     n = len(groups)
     parent = list(range(n))
 
@@ -309,12 +352,81 @@ def _cluster(lines: list[_Line], vertical: bool) -> list[list[_Line]]:
     return clusters
 
 
+def _columns(lines: list[_Line]) -> list[list[_Line]]:
+    """Vertical text as columns in reading order. Lens sometimes also reads a row straight
+    across neighbouring columns (the tops of 很齐全嘛 | 不是准备得 as "很不"); clustered as is,
+    that line chains the columns into one and repeats their glyphs. Its glyphs go to the
+    columns under them instead, and are dropped where a column already has them. Only a
+    line level with the columns is such a read: a caption above or below them stays whole."""
+    def width(l):
+        return l.box[2] - l.box[0]
+
+    def mid(cl):
+        return (min(l.box[0] for l in cl) + max(l.box[2] for l in cl)) / 2
+
+    tall = [width(l) for l in lines if l.box[3] - l.box[1] > width(l)]
+    ref = float(np.median(tall or [width(l) for l in lines]))
+    # Lens may squeeze a cross read to little more than one column pitch
+    wide = [l for l in lines if width(l) > l.box[3] - l.box[1] and len(l.text.strip()) >= 2
+            and width(l) > (1.25 if _CJK_ONLY.match(l.text) else 1.6) * ref]
+    cols = _cluster([l for l in lines if all(l is not w for w in wide)], True)
+    body = [cl for cl in cols if max(l.box[2] for l in cl) - min(l.box[0] for l in cl) >= 0.6 * ref]  # no ruby
+    top = min((l.box[1] for cl in cols for l in cl), default=0.0)
+    bottom = max((l.box[3] for cl in cols for l in cl), default=0.0)
+    before, after, rest = [], [], []
+    for ln in sorted(wide, key=lambda l: l.box[1]):
+        x0, y0, x1, y1 = ln.box
+        cy = (y0 + y1) / 2
+        level = top - 0.5 * ref <= cy <= bottom + 0.5 * ref
+        text = ln.text.strip()
+        ok = False
+        if not _LATIN.search(text) and (_HAN.search(text) or _KANA_ANY.search(text) or _HANGUL.search(text)):
+            if len(body) > 1 and level:
+                parts = [ch for ch in text if not ch.isspace()]   # one glyph per column, on its centre
+                gw = y1 - y0   # square glyphs: also cancels Lens' box padding
+                spots = [x0 + gw / 2 + i * (x1 - x0 - gw) / max(len(parts) - 1, 1) for i in range(len(parts))]
+                hits = [min(body, key=lambda cl: abs(mid(cl) - cx)) for cx in spots]
+                ok = len({id(cl) for cl in hits}) == len(parts) and \
+                    all(abs(mid(cl) - cx) <= 0.25 * ref for cl, cx in zip(hits, spots))
+                if not ok:   # squeezed box over columns that already have these glyphs: just drop it
+                    hits = sorted((cl for cl in body if x0 - 0.25 * ref <= mid(cl) <= x1 + 0.25 * ref), key=mid)
+                    ok = len(hits) == len(parts) and \
+                        all(any(l.box[1] <= cy <= l.box[3] for l in cl) for cl in hits)
+                spots = [mid(cl) for cl in hits]
+        elif cols:   # a Latin word set inside one column
+            parts, spots = [text], [(x0 + x1) / 2]
+            hits = [cl for cl in cols if x0 - 0.25 * ref <= mid(cl) <= x1 + 0.25 * ref]
+            ok = len(hits) == 1
+        if ok:
+            for part, cl, cx in zip(parts, hits, spots):
+                if not any(l.box[1] - 0.3 * ref <= cy <= l.box[3] + 0.3 * ref for l in cl):
+                    b = (cx - ref / 2, y0, cx + ref / 2, y1)
+                    cl.append(_Line(part, [(b[0], b[1]), (b[2], b[1]), (b[2], b[3]), (b[0], b[3])], b, True))
+        elif cy > bottom + 0.5 * ref or y0 >= bottom - 0.5 * ref:   # real text of its own: keep it where it sits
+            after.append([ln])
+        elif cy < top - 0.5 * ref or y1 <= top + 0.5 * ref:
+            before.append([ln])
+        else:
+            rest.append([ln])
+    main = body or cols
+    xr = [(min(l.box[0] for l in m), max(l.box[2] for l in m)) for m in main]
+    for cl in rest:   # level with the columns: the one column it sits over or under reads it top to bottom
+        x0, x1 = cl[0].box[0], cl[0].box[2]
+        under = main if len(main) == 1 else [m for m, (a, b) in zip(main, xr) if min(x1, b) - max(x0, a) > 0.5 * (b - a)]
+        if len(under) == 1:
+            under[0] += cl
+        else:
+            cols.append(cl)
+    cols.sort(key=lambda cl: -np.mean([(l.box[0] + l.box[2]) / 2 for l in cl]))
+    return before + cols + after
+
+
 def _compose(g: _Group, hint: str) -> tuple[str, list]:
     """Group text in reading order (furigana excluded). Returns (text, all lines to erase)."""
     if g.vertical:
-        cols = _cluster(g.lines, True)
-        cols.sort(key=lambda cl: -np.mean([(l.box[0] + l.box[2]) / 2 for l in cl]))
+        cols = _columns(g.lines)
         ordered = [l for cl in cols for l in sorted(cl, key=lambda l: l.box[1])]
+        erase = list(g.lines)
         if len(ordered) >= 2:   # ruby columns Lens kept inside the paragraph
             base = [l.thickness for l in ordered if not _KANA_ONLY.match(l.text or "")] or [l.thickness for l in ordered]
             ref = float(np.median(base))
@@ -326,13 +438,13 @@ def _compose(g: _Group, hint: str) -> tuple[str, list]:
         rows = _cluster(g.lines, False)
         rows.sort(key=lambda cl: np.mean([(l.box[1] + l.box[3]) / 2 for l in cl]))
         ordered = [l for cl in rows for l in sorted(cl, key=lambda l: l.box[0])]
-        text_lines = ordered
+        text_lines = erase = ordered
     lang = g.lang or _script_lang("".join(ln.text for ln in text_lines), hint)
     sep = "" if lang in ("ja", "zh") else " "
     text = sep.join(ln.text.strip() for ln in text_lines if ln.text.strip())
     if lang in ("ja", "zh"):
         text = re.sub(r"\s+", "", text)
-    return text, ordered + list(g.furigana)
+    return text, erase + list(g.furigana)
 
 
 def _is_noise(text: str, src_hint: str, target: str) -> bool:
@@ -363,7 +475,8 @@ def _reading_order(blocks: list[TextBlock], lang: str) -> list[TextBlock]:
                 row.append(b)
                 continue
         rows.append([b])
-    rtl = lang == "ja"
+    # vertical Chinese is laid out like manga too (mostly translated manga)
+    rtl = lang == "ja" or sum(b.vertical for b in blocks) * 2 > len(blocks)
     out = []
     for row in rows:
         out += sorted(row, key=lambda b: -(b.box[0] + b.box[2]) / 2 if rtl else b.box[0])

@@ -1,8 +1,8 @@
 """Full session against the local test site (headless Chrome).
 
 usage: python tests/test_session.py [seconds] [engine]
-Serves tests/site on http://127.0.0.1:8765, runs a Session, saves the results to
-tests/out/session/, and prints the log.
+Serves tests/site on http://127.0.0.1:8765 (env PCM_TEST_PORT picks another port, 0 = any free one),
+runs a Session, saves the results to tests/out/session/, and prints the log.
 """
 import functools
 import http.server
@@ -23,6 +23,7 @@ from pcm.session import Session
 HERE = os.path.dirname(os.path.abspath(__file__))
 SITE = os.path.join(HERE, "site")
 OUT = os.path.join(HERE, "out", "session")
+PORT = int(os.environ.get("PCM_TEST_PORT") or 8765)
 
 
 class Quiet(http.server.SimpleHTTPRequestHandler):
@@ -30,11 +31,25 @@ class Quiet(http.server.SimpleHTTPRequestHandler):
         pass
 
 
+class OwnPort(http.server.ThreadingHTTPServer):
+    # http.server sets SO_REUSEADDR, which on Windows binds a port another server is listening on
+    # and the test then runs against that server's pages; a busy port must fail instead
+    allow_reuse_address = False
+
+
 def serve():
+    """The test site on 127.0.0.1:PORT. Pages are at site_url(httpd) (the real port when PORT is 0)."""
     handler = functools.partial(Quiet, directory=SITE)
-    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 8765), handler)
+    try:
+        httpd = OwnPort(("127.0.0.1", PORT), handler)
+    except OSError as e:
+        raise SystemExit(f"port {PORT} is busy ({e}); set PCM_TEST_PORT to a free port, or 0 for any") from e
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd
+
+
+def site_url(httpd, page="index.html"):
+    return "http://127.0.0.1:%d/%s" % (httpd.server_address[1], page)
 
 
 def main(seconds, engine, page="index.html", settle=6):
@@ -48,7 +63,7 @@ def main(seconds, engine, page="index.html", settle=6):
     for very_noisy in ("uc", "uc.connection", "uc.browser", "uc.tab"):
         logging.getLogger(very_noisy).setLevel(logging.CRITICAL)
     s = Settings()
-    s.last_url = "http://127.0.0.1:8765/" + page
+    s.last_url = site_url(httpd, page)
     s.engine = engine
     s.keep_browser_profile = False
     s.save_dir = OUT

@@ -1,4 +1,9 @@
-"""Drive the real Tk window against the local test site (Chrome headless)."""
+"""Drive the real Tk window against the local test site (Chrome headless).
+
+env: PCM_TEST_PORT (site port, see test_session.py), PCM_TEST_URL, PCM_TEST_ENGINE (default google).
+Prints the log panel, then what this run wrote to log.txt (per-bubble details the panel leaves out).
+"""
+import logging
 import os
 import shutil
 import sys
@@ -9,8 +14,8 @@ os.environ["PCM_HEADLESS"] = "1"
 
 import ttkbootstrap as ttk
 
-from pcm.config import Settings, app_data_dir
-from test_session import OUT, serve
+from pcm.config import ENGINES, Settings, app_data_dir
+from test_session import OUT, serve, site_url
 import poomcatomanga
 
 SETTINGS = os.path.join(app_data_dir(), "settings.json")
@@ -23,7 +28,8 @@ def main():
     httpd = serve()
     root = ttk.Window()
     app = poomcatomanga.App(root)
-    app.url.set(os.environ.get("PCM_TEST_URL", "http://127.0.0.1:8765/index.html"))
+    app.url.set(os.environ.get("PCM_TEST_URL") or site_url(httpd))
+    app.engine.set(poomcatomanga._label(ENGINES, os.environ.get("PCM_TEST_ENGINE", "google")))
     app.save_enabled.set(True)      # saving is hidden/off by default; the test turns it on
     app.save_dir.set(OUT)
     app.auto_save.set(True)
@@ -47,6 +53,7 @@ def main():
             print("start button state:", str(app.btn_start.cget("state")))
             print("--- log ---")
             print(app.log.get("1.0", "end").strip())
+            print_log_file()
             root.destroy()
             return
         root.after(250, tick)
@@ -64,6 +71,18 @@ def main():
     for r, _d, files in os.walk(OUT):
         for f in files:
             print("saved:", os.path.relpath(os.path.join(r, f), OUT))
+
+
+def print_log_file():
+    """This process's part of log.txt (from its launch marker on)."""
+    for h in logging.getLogger().handlers:
+        if isinstance(h, logging.FileHandler):
+            h.flush()
+            with open(h.baseFilename, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+            i = text.rfind(f"pid {os.getpid()},")
+            print(f"--- {os.path.basename(h.baseFilename)} ---")
+            print(text[text.rfind("\n", 0, i) + 1:].strip() if i >= 0 else "(launch marker not found)")
 
 
 if __name__ == "__main__":

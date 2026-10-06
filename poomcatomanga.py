@@ -19,7 +19,9 @@ from pcm.config import (APP_AUTHOR, APP_NAME, APP_VERSION, ENGINES, SOURCE_LANGS
                         local_data_dir, resource_path)
 
 LOG = logging.getLogger("poomcatomanga")
+DETAIL = logging.getLogger("poomcatomanga.detail")   # log.txt only (same name in pcm/session.py)
 UI_FONT = "Leelawadee UI"
+LOG_KEEP_BYTES = 2_000_000   # log.txt is moved to log-old.txt at launch once it is this big
 
 # Two original themes: violet night / soft day
 PALETTES = {
@@ -59,11 +61,94 @@ class QueueLogHandler(logging.Handler):
         super().__init__()
         self.q = q
 
+    def filter(self, record):
+        return not record.name.startswith(DETAIL.name) and super().filter(record)
+
     def emit(self, record):
         try:
             self.q.put(("log", record.levelno, self.format(record)))
         except Exception:
             pass
+
+
+_log_lock = []   # (fd, stem) of the log.lock this process holds until it exits
+
+
+def _claim(stem: str) -> int | None:
+    """Lock stem.lock for the life of this process. None = another running copy holds it.
+    A viewer that has log.txt open doesn't count: only app instances take this lock."""
+    fd = os.open(stem + ".lock", os.O_RDWR | os.O_CREAT)
+    try:
+        import msvcrt
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)   # released by Windows when the process ends
+    except ImportError:
+        pass
+    except OSError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def _written_elsewhere(path: str) -> bool:
+    """Another process has path open for writing: a copy built before log.lock (it opened log.txt
+    with mode "w" and would write over our lines). Readers such as Get-Content -Wait don't count."""
+    if os.name != "nt":
+        return False
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateFileW.restype = wintypes.HANDLE
+    k32.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                                wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+    # read access, sharing read+delete but not write: refused while any handle can write the file
+    h = k32.CreateFileW(path, 0x80000000, 0x1 | 0x4, None, 3, 0, None)
+    if h is None or h == ctypes.c_void_p(-1).value:
+        return ctypes.get_last_error() == 32   # ERROR_SHARING_VIOLATION
+    k32.CloseHandle(wintypes.HANDLE(h))
+    return False
+
+
+def open_log_file() -> logging.FileHandler | None:
+    """log.txt in the data folder. Appended to, so relaunching the app doesn't wipe the session
+    that went wrong. A second copy running at the same time writes log-2.txt instead (each copy
+    holds log.lock / log-N.lock while it runs). Over LOG_KEEP_BYTES the file moves to log-old.txt,
+    which only the copy holding its lock ever does."""
+    try:
+        folder = local_data_dir()
+    except OSError:
+        return None
+    for n in range(1, 10):
+        stem = os.path.join(folder, "log" if n == 1 else f"log-{n}")
+        held = _log_lock[0][1] if _log_lock else None
+        if held and held != stem:
+            continue
+        fd = None
+        if not held:
+            try:
+                fd = _claim(stem)
+            except OSError:
+                continue
+            if fd is None:
+                continue
+        path = stem + ".txt"
+        if fd is not None and _written_elsewhere(path):
+            os.close(fd)
+            continue
+        try:
+            if os.path.getsize(path) > LOG_KEEP_BYTES:
+                os.replace(path, stem + "-old.txt")
+        except OSError:   # missing, or a viewer has it open: keep appending
+            pass
+        try:
+            fh = logging.FileHandler(path, mode="a", encoding="utf-8", errors="replace")
+        except OSError:
+            if fd is not None:
+                os.close(fd)
+            continue
+        if fd is not None:
+            _log_lock.append((fd, stem))
+        return fh
+    return None
 
 
 def _label(options, code):
@@ -172,14 +257,16 @@ class SettingsWindow(ttk.Toplevel):
     def _page_local(self, f, s):
         self._title(f, "AI ในเครื่อง (ฟรี)",
                     "รันโมเดลบนเครื่องคุณเอง ไม่เสียค่าใช้จ่าย ใช้ LM Studio (แนะนำสำหรับการ์ดจอ AMD) หรือ Ollama\n"
-                    "1) ติดตั้ง LM Studio   2) ดาวน์โหลดโมเดล เช่น Gemma 3 12B หรือ Typhoon\n"
-                    "3) แท็บ Developer → Start Server   (Ollama ใช้ http://localhost:11434/v1)")
+                    "1) ติดตั้ง LM Studio (หรือ Bionic)   2) ดาวน์โหลดโมเดล เช่น Gemma 4 12B\n"
+                    "3) เปิดเซิร์ฟเวอร์: LM Studio แท็บ Developer / Bionic เมนู Local Model API   "
+                    "(Ollama ใช้ http://localhost:11434/v1)")
         self._entry(f, 2, "Server URL", "local_base_url")
         self._entry(f, 3, "ชื่อโมเดล (ว่าง = ตัวที่โหลดอยู่)", "local_model")
+        self._toggle(f, 4, "ให้ AI คิดก่อนตอบ (แม่นขึ้นนิดหน่อย แต่ช้าลงเกือบ 10 เท่า)", "local_thinking")
         ttk.Button(f, text="ทดสอบการเชื่อมต่อ", bootstyle="info-outline", command=self.test_local).grid(
-            row=4, column=1, sticky=W, pady=10)
+            row=5, column=1, sticky=W, pady=10)
         self.local_status = ttk.Label(f, text="", wraplength=520, justify=LEFT)
-        self.local_status.grid(row=5, column=0, columnspan=3, sticky=W)
+        self.local_status.grid(row=6, column=0, columnspan=3, sticky=W)
 
     def _page_gemini(self, f, s):
         self._title(f, "Google Gemini", "สร้าง API key ได้ที่ aistudio.google.com — โควตาฟรีมีน้อย (วันละไม่กี่ครั้ง)")
@@ -313,16 +400,23 @@ class SettingsWindow(ttk.Toplevel):
         # read only the URL field: testing must not commit other edits (Cancel still cancels)
         self.local_status.configure(text="กำลังตรวจสอบ…")
         base = self.vars["local_base_url"].get().strip().rstrip("/")
+        name = self.vars["local_model"].get().strip()
 
         def work():
             import httpx
+            from pcm.translate import match_model
             try:
                 r = httpx.get(base + "/models", timeout=httpx.Timeout(5, connect=3))
                 r.raise_for_status()
-                models = [m.get("id") for m in r.json().get("data", [])]
+                models = [m.get("id") for m in r.json().get("data", []) if m.get("id")]
                 msg = "เชื่อมต่อได้ ✓  โมเดลที่มี: " + (", ".join(models) if models else "(ยังไม่ได้โหลดโมเดล)")
+                if name:
+                    found = match_model(name, models)
+                    msg += (f"\nชื่อโมเดล \"{name}\" → ใช้ {found} ✓" if found else
+                            f"\n⚠ ไม่พบโมเดล \"{name}\" — เว้นช่องว่างไว้ หรือพิมพ์ชื่อตามรายการด้านบน")
             except Exception as e:
-                msg = f"เชื่อมต่อไม่ได้: {e}\nเปิด LM Studio → Developer → Start Server แล้วหรือยัง?"
+                msg = (f"เชื่อมต่อไม่ได้: {e}\n"
+                       "เปิดเซิร์ฟเวอร์แล้วหรือยัง? (LM Studio แท็บ Developer / Bionic เมนู Local Model API)")
             self.app.events.put(("call", lambda: self.local_status.winfo_exists() and self.local_status.configure(text=msg)))
 
         threading.Thread(target=work, daemon=True).start()
@@ -333,8 +427,9 @@ class SettingsWindow(ttk.Toplevel):
 class App:
     def __init__(self, root: ttk.Window):
         self.root = root
-        self.settings = Settings.load()
         self.events: queue.Queue = queue.Queue()
+        self._install_logging()
+        self.settings = Settings.load()
         self.session = None
         self._state = "idle"
         register_themes(root.style)
@@ -349,7 +444,6 @@ class App:
         self.save_dir = tk.StringVar(value=self.settings.save_dir)
         self.auto_save = tk.BooleanVar(value=self.settings.auto_save)
         self._build()
-        self._install_logging()
         self._install_thai_keyboard_shortcuts()
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         root.after(100, self._drain)
@@ -554,17 +648,32 @@ class App:
         root_log = logging.getLogger()
         root_log.addHandler(handler)
         root_log.setLevel(logging.INFO)
-        try:   # same log on disk (overwritten each launch) so problems can be looked at later
-            fh = logging.FileHandler(os.path.join(local_data_dir(), "log.txt"), mode="w", encoding="utf-8")
+        fh = open_log_file()   # same log on disk so problems can be looked at later, plus per-bubble details
+        if fh:
             fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
             root_log.addHandler(fh)
-        except Exception:
-            pass
+        else:
+            LOG.warning("เขียนไฟล์ log ไม่ได้")
         for noisy in ("httpx", "httpcore", "seleniumbase", "selenium", "urllib3", "anthropic", "httpx2",
                       "websockets", "asyncio", "chrome_lens_py", "filelock"):
             logging.getLogger(noisy).setLevel(logging.WARNING)
         for very_noisy in ("uc", "uc.connection", "uc.browser", "uc.tab"):  # CDP event-parsing chatter
             logging.getLogger(very_noisy).setLevel(logging.CRITICAL)
+        DETAIL.info("===== %s %s เริ่มทำงาน (%s, pid %d, %s) =====", APP_NAME, APP_VERSION,
+                    "exe" if getattr(sys, "frozen", False) else "python " + sys.version.split()[0], os.getpid(),
+                    os.path.basename(fh.baseFilename) if fh else "ไม่มีไฟล์ log")
+
+        # the exe has no console (sys.stderr is None): unhandled errors would otherwise vanish
+        def unhandled(where, exc_info):
+            LOG.error("เกิดข้อผิดพลาด: %s", exc_info[1])
+            DETAIL.error("unhandled (%s)", where, exc_info=exc_info)
+
+        def thread_error(a):
+            if a.exc_type is not SystemExit:
+                unhandled(getattr(a.thread, "name", "thread"), (a.exc_type, a.exc_value, a.exc_traceback))
+
+        self.root.report_callback_exception = lambda *exc: unhandled("tk", exc)
+        threading.excepthook = thread_error
 
     def _install_thai_keyboard_shortcuts(self):
         """Ctrl+C/V/X/A don't work in Tk when the keyboard is in Thai layout: map by control char."""
@@ -713,8 +822,8 @@ class App:
                     ev[1]()
         except queue.Empty:
             pass
-        except Exception as e:  # never let the UI loop die
-            LOG.debug("ui event error: %s", e)
+        except Exception:  # never let the UI loop die
+            DETAIL.warning("ui event error", exc_info=True)
         self.root.after(80, self._drain)
 
     def on_close(self):
