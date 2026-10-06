@@ -31,6 +31,7 @@ import httpx
 from PIL import Image, ImageDraw
 
 from . import cdp as safe
+from .attach import AttachedBrowser, AttachError, allow_foreground, attach_wait, find_endpoint
 from .cache import DiskCache
 from .config import Settings, local_data_dir, resource_path
 from .model import poly_box
@@ -207,6 +208,7 @@ class Session:
     def __init__(self, settings: Settings, events: queue.Queue):
         # snapshot: edits in the UI while running must not change this session's behaviour
         self.s = copy.deepcopy(settings)
+        self.attach_mode = self.s.browser_mode == "attach"   # the user's own Chrome: never closed by us
         self.events = events
         self.loop: asyncio.AbstractEventLoop | None = None
         self.thread: threading.Thread | None = None
@@ -327,21 +329,27 @@ class Session:
         s = self.s
         extra = {"local": f" url={s.local_base_url} thinking={'on' if s.local_thinking else 'off'}",
                  "openai": f" url={s.openai_base_url}", "claude": f" effort={s.claude_effort}"}.get(s.engine, "")
-        DETAIL.info("เริ่มแปล: engine=%s model=%s%s ภาษา=%s→%s พร้อมกัน=%s ส่งภาพ=%s glossary=%d pipeline=%s",
+        DETAIL.info("เริ่มแปล: engine=%s model=%s%s ภาษา=%s→%s พร้อมกัน=%s ส่งภาพ=%s glossary=%d pipeline=%s เบราว์เซอร์=%s",
                     s.engine, getattr(s, s.engine + "_model", "") or "-", extra, s.source_lang, s.target_lang,
-                    s.concurrency, s.send_image_to_ai, len(s.glossary_pairs()), PIPELINE_VERSION)
+                    s.concurrency, s.send_image_to_ai, len(s.glossary_pairs()), PIPELINE_VERSION, s.browser_mode)
         tasks = []
         try:
-            LOG.info("กำลังเปิด Chrome…")
-            await self._launch()
-            await self._ensure_prepared(self.browser.main_tab)
+            if self.attach_mode:
+                tab = await self._attach()
+                if tab is None:
+                    return
+            else:
+                LOG.info("กำลังเปิด Chrome…")
+                await self._launch()
+                tab = self.browser.main_tab
+            await self._ensure_prepared(tab)
             n = max(1, min(8, int(self.s.concurrency)))
             tasks = [asyncio.create_task(self._worker(i)) for i in range(n)]
             tasks.append(asyncio.create_task(self._poll_loop()))
             tasks.append(asyncio.create_task(self.translator.prepare()))
-            if not self.stop_event.is_set():
+            if not self.stop_event.is_set() and (self.s.last_url or not self.attach_mode):
                 LOG.info("เปิดหน้า: %s", self.s.last_url)
-                nav = asyncio.create_task(self._navigate(self.browser.main_tab, self.s.last_url))
+                nav = asyncio.create_task(self._navigate(tab, self.s.last_url))
                 stop = asyncio.create_task(self.stop_event.wait())
                 await asyncio.wait({nav, stop}, return_when=asyncio.FIRST_COMPLETED)
                 nav.cancel()
@@ -349,6 +357,10 @@ class Session:
             if not self.stop_event.is_set():
                 LOG.info("พร้อมแปล — เลื่อนอ่านได้เลย รูปที่เห็นอยู่จะถูกแปลก่อน (กด Alt+T ในหน้าเว็บเพื่อสลับต้นฉบับ)")
             await self.stop_event.wait()
+        except AttachError as e:
+            (LOG.warning if e.kind in ("missing", "stale") else LOG.error)("%s", e.msg)
+            DETAIL.info("attach: %s", e.kind)
+            self._emit("attach_failed", e.kind, e.msg)
         except Exception as e:
             LOG.error("เริ่มทำงานไม่สำเร็จ: %s", e)
             DETAIL.error("start", exc_info=True)
@@ -357,12 +369,17 @@ class Session:
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            if self.attach_mode and self.browser is not None:
+                try:   # first, so Chrome's "controlled by automated test software" bar goes away at once
+                    await asyncio.wait_for(self.browser.detach(), 6)
+                except Exception:
+                    pass
             for closer in (self.renderer.close, self.ocr.aclose, self.translator.aclose, self.http.aclose):
                 try:
                     await asyncio.wait_for(closer(), 10)
                 except Exception:
                     pass
-            if self.browser is not None:
+            if self.browser is not None and not self.attach_mode:
                 try:
                     self.browser.stop()
                 except Exception:
@@ -370,7 +387,7 @@ class Session:
                 await asyncio.sleep(0.3)
             if self._profile_tmp:
                 shutil.rmtree(self._profile_tmp, ignore_errors=True)
-            LOG.info("หยุดแล้ว")
+            LOG.info("หยุดแล้ว — Chrome ของคุณยังเปิดอยู่ตามเดิม" if self.attach_mode and self.browser else "หยุดแล้ว")
 
     # ----------------------------------------------------------- browser ---
     async def _launch(self):
@@ -388,6 +405,57 @@ class Session:
             LOG.warning("ใช้โปรไฟล์เดิมไม่ได้ (%s) — เปิดแบบชั่วคราวแทน", e)
             profile = self._profile_tmp = tempfile.mkdtemp(prefix="pcm_profile_")
             self.browser = await asyncio.wait_for(cdp_util.start_async(user_data_dir=profile, headless=headless), 60)
+
+    async def _attach(self):
+        """Attach mode: connect to the browser the user has open (Chrome asks them to Allow), then take a
+        new tab for the link, or else the tab in front. None if Stop was pressed meanwhile."""
+        ep, why = find_endpoint()
+        if ep is None:
+            raise AttachError(why)
+        DETAIL.info("ใช้เบราว์เซอร์ที่เปิดอยู่: %s port %d", ep.name, ep.port)
+        LOG.info("กำลังเชื่อมต่อ %s ที่เปิดอยู่… (กด Allow ในหน้าต่างที่ %s ถาม — ถามทุกครั้งที่เริ่ม)", ep.name, ep.name)
+        self._emit("status", f"กด Allow ในหน้าต่าง {ep.name} เพื่ออนุญาต")
+        allow_foreground()
+        connect = asyncio.create_task(AttachedBrowser.connect(ep, attach_wait()))
+        if not await self._until(connect):
+            LOG.info("ยกเลิกการเชื่อมต่อแล้ว — ถ้า %s ยังถามอยู่ ให้กด Cancel (ยกเลิก)", ep.name)
+            return None
+        self.browser = connect.result()
+        self.browser.on_follow = lambda t: asyncio.ensure_future(self._ensure_prepared(t))
+        if self.stop_event.is_set():
+            return None
+        if self.s.last_url:
+            tab = await self.browser.open_tab()
+            DETAIL.info("แท็บที่แปล: แท็บใหม่ %s", self.s.last_url)
+            return tab
+
+        def waiting():
+            LOG.info("คลิกแท็บมังงะใน %s เพื่อเลือกแท็บที่จะแปล", ep.name)
+            self._emit("status", f"คลิกแท็บมังงะใน {ep.name} เพื่อเลือกแท็บที่จะแปล")
+
+        self._emit("status", "เชื่อมต่อแล้ว — กำลังหาแท็บที่เปิดอยู่ด้านหน้า…")
+        tab = await self.browser.pick_front(self.stop_event, waiting)
+        if tab is not None:
+            try:
+                info = json.loads(await safe.evaluate(tab, "JSON.stringify({u:location.href,t:document.title})", 5))
+            except Exception:
+                info = {}
+            LOG.info("แปลแท็บ: %s", info.get("t") or info.get("u") or "?")
+            DETAIL.info("แท็บที่แปล: %s", info.get("u") or "?")
+        return tab
+
+    async def _until(self, task) -> bool:
+        """Wait for `task` unless Stop comes first (then cancel it and return False)."""
+        stop = asyncio.create_task(self.stop_event.wait())
+        try:
+            await asyncio.wait({task, stop}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            stop.cancel()
+        if task.done():
+            return True
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return False
 
     async def _ensure_prepared(self, tab):
         """(Re)apply our per-tab setup. A reconnected DevTools socket loses all of it."""
@@ -450,6 +518,8 @@ class Session:
                 pass
 
     def _browser_alive(self) -> bool:
+        if self.attach_mode:
+            return self.browser.alive
         proc = getattr(self.browser, "_process", None)
         if proc is None:
             return True
@@ -498,7 +568,9 @@ class Session:
         while not self.stop_event.is_set():
             await asyncio.sleep(0.35)
             if not self._browser_alive():
-                LOG.info("ปิดเบราว์เซอร์แล้ว — หยุดการแปล")
+                # attach mode never reconnects on its own: every connection makes Chrome ask again
+                LOG.info("การเชื่อมต่อกับ Chrome หลุด (ปิด Chrome หรือปิดการอนุญาต) — หยุดการแปล" if self.attach_mode
+                         else "ปิดเบราว์เซอร์แล้ว — หยุดการแปล")
                 self.stop_event.set()
                 return
             try:
@@ -511,7 +583,8 @@ class Session:
                     if tab is None:
                         no_tab += 1
                         if no_tab > 15:
-                            LOG.info("ไม่มีแท็บเหลือแล้ว — หยุดการแปล")
+                            LOG.info("ปิดแท็บที่แปลอยู่แล้ว — หยุดการแปล (Chrome ยังเปิดอยู่)" if self.attach_mode
+                                     else "ไม่มีแท็บเหลือแล้ว — หยุดการแปล")
                             self.stop_event.set()
                         continue
                     no_tab = 0

@@ -25,11 +25,17 @@ class JSError(RuntimeError):
 
 def socket_id(tab) -> int:
     """Identity of the tab's current DevTools session (changes after a reconnect)."""
+    key = getattr(tab, "session_key", None)   # attach mode: a session on the shared browser socket
+    if key is not None:
+        return key
     return id(getattr(tab, "websocket", None))
 
 
 async def call(tab, cmd, timeout: float = 15):
     """Send one CDP command on `tab` and return its parsed result (raises on error/timeout)."""
+    send = getattr(tab, "send_cdp", None)     # attach mode (pcm/attach.py)
+    if send is not None:
+        return await send(cmd, timeout)
     await asyncio.wait_for(tab.aopen(), 10)
     ws = tab.websocket
     if ws is None or ws.state is State.CLOSED:

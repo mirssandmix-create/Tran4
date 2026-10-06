@@ -207,6 +207,7 @@ class SettingsWindow(ttk.Toplevel):
         self.content.pack(side=LEFT, fill=BOTH, expand=True)
 
         self.pages: dict[str, ttk.Frame] = {}
+        self.toggles: dict[str, ttk.Checkbutton] = {}
         for key, _ in self.PAGES:
             f = ttk.Frame(self.content)
             f.columnconfigure(1, weight=1)
@@ -237,8 +238,8 @@ class SettingsWindow(ttk.Toplevel):
     def _toggle(self, f, row, label, key, command=None):
         v = tk.BooleanVar(value=bool(getattr(self.app.settings, key)))
         self.vars[key] = v
-        ttk.Checkbutton(f, text=label, variable=v, bootstyle="success-round-toggle", command=command).grid(
-            row=row, column=0, columnspan=3, sticky=W, pady=6)
+        self.toggles[key] = ttk.Checkbutton(f, text=label, variable=v, bootstyle="success-round-toggle", command=command)
+        self.toggles[key].grid(row=row, column=0, columnspan=3, sticky=W, pady=6)
         return v
 
     def _spin(self, f, row, label, key, lo, hi, step=1):
@@ -358,8 +359,12 @@ class SettingsWindow(ttk.Toplevel):
         self._spin(f, 2, "แปลพร้อมกันกี่รูป", "concurrency", 1, 8)
         self._spin(f, 3, "ข้ามรูปที่เล็กกว่า (px)", "min_image_side", 50, 1000, 50)
         self._toggle(f, 4, "จำการล็อกอิน/คุกกี้ของเว็บไว้ (ผ่าน Cloudflare ครั้งเดียวพอ)", "keep_browser_profile")
+        if self.app.use_open_chrome.get():   # the user's own Chrome keeps its own logins
+            self.toggles["keep_browser_profile"].configure(state=DISABLED)
+            ttk.Label(f, text="ไม่มีผลเมื่อใช้ Chrome ที่เปิดอยู่ — ใช้การล็อกอินและคุกกี้ใน Chrome ของคุณอยู่แล้ว",
+                      style="Muted.TLabel", wraplength=520).grid(row=5, column=0, columnspan=3, sticky=W)
         ttk.Label(f, text=f"ไฟล์ log และแคชอยู่ที่: {local_data_dir()}", style="Muted.TLabel", wraplength=520).grid(
-            row=5, column=0, columnspan=3, sticky=W, pady=(16, 0))
+            row=6, column=0, columnspan=3, sticky=W, pady=(16, 0))
 
     def _page_about(self, f, s):
         if self._logo:
@@ -432,6 +437,7 @@ class App:
         self.settings = Settings.load()
         self.session = None
         self._state = "idle"
+        self._guide = None
         register_themes(root.style)
         root.style.theme_use(theme_name(self.settings.theme))
         root.title(f"{APP_NAME}  {APP_VERSION}")
@@ -455,6 +461,7 @@ class App:
         st = self.root.style
         pal = palette(self.settings.theme)
         st.configure("Muted.TLabel", foreground=MUTED[self.settings.theme], background=pal["bg"], font=(UI_FONT, 10))
+        st.configure("CardLink.TLabel", foreground=pal["info"], background=pal["secondary"], font=(UI_FONT, 10, "underline"))
         for name in ("TLabel", "TButton", "TCheckbutton", "TRadiobutton", "TEntry", "TCombobox", "TLabelframe.Label"):
             st.configure(name, font=(UI_FONT, 10))
         self.root.option_add("*TCombobox*Listbox.font", (UI_FONT, 10))
@@ -512,6 +519,17 @@ class App:
         self.url_entry = ttk.Entry(in1, textvariable=self.url, font=(UI_FONT, 11))
         self.url_entry.grid(row=0, column=0, sticky=EW, ipady=4)
         ttk.Button(in1, text="วางลิงก์", bootstyle=PRIMARY, command=self.paste_url).grid(row=0, column=1, padx=(8, 0))
+        # attach mode: translate in the Chrome the user already has open
+        self.use_open_chrome = tk.BooleanVar(value=s.browser_mode == "attach")
+        mode = ttk.Frame(in1, bootstyle=SECONDARY)
+        mode.grid(row=1, column=0, columnspan=2, sticky=EW, pady=(10, 0))
+        self.mode_toggle = ttk.Checkbutton(mode, text="ใช้ Chrome ที่เปิดอยู่ (ไม่ต้องวางลิงก์)", variable=self.use_open_chrome,
+                                           bootstyle="success-round-toggle", command=self._sync_mode)
+        self.mode_toggle.pack(side=LEFT)
+        self.mode_help = ttk.Label(mode, text="วิธีเปิดใช้ ›", style="CardLink.TLabel", cursor="hand2")
+        self.mode_help.bind("<Button-1>", lambda e: self.show_attach_guide())
+        self.mode_hint = ttk.Label(in1, text="เว้นช่องลิงก์ว่าง = แปลแท็บที่เปิดอยู่ด้านหน้าใน Chrome   •   "
+                                             "ใส่ลิงก์ = เปิดในแท็บใหม่ของ Chrome", bootstyle=(INVERSE, SECONDARY))
 
         # step 2: languages + translator
         c2, in2 = self._card(page, "2", "ภาษาและตัวแปล")
@@ -569,6 +587,7 @@ class App:
         self.tip.pack(side=BOTTOM, anchor=W, pady=(8, 0))
         self._details = False
         self.apply_settings()
+        self._sync_mode()
         self._set_state("idle")
         self.url_entry.focus_set()
 
@@ -576,6 +595,28 @@ class App:
         code = _code(ENGINES, self.engine.get())
         hint = next((e[2] for e in ENGINES if e[0] == code), "")
         self.engine_hint.configure(text=hint)
+
+    def _sync_mode(self):
+        """Show what the link field means in the chosen browser mode."""
+        on = bool(self.use_open_chrome.get())
+        self.settings.browser_mode = "attach" if on else "own"
+        if on:
+            self.mode_help.pack(side=LEFT, padx=(14, 0))
+            self.mode_hint.grid(row=2, column=0, columnspan=2, sticky=W, pady=(6, 0))
+        else:
+            self.mode_help.pack_forget()
+            self.mode_hint.grid_remove()
+
+    def _card_styles(self):
+        """Widgets on a card need the card's colour (the theme paints them with the page background)."""
+        st, pal = self.root.style, palette(self.settings.theme)
+        bg = pal["secondary"]
+        fg = st.lookup("secondary.Inverse.TLabel", "foreground") or pal["fg"]
+        self.mode_toggle.configure(bootstyle="success-round-toggle")   # builds the base style for this theme
+        st.configure("Card.success.Round.Toggle", background=bg, foreground=fg)
+        st.map("Card.success.Round.Toggle", background=[("selected", bg)],
+               foreground=[("disabled", MUTED[self.settings.theme])])
+        self.mode_toggle.configure(style="Card.success.Round.Toggle")
 
     def toggle_details(self):
         self._details = not self._details
@@ -602,6 +643,7 @@ class App:
         self.root.style.configure("success.TButton", font=(UI_FONT, 13, "bold"))
         self.root.style.configure("danger.TButton", font=(UI_FONT, 13, "bold"))
         pal = palette(s.theme)
+        self._card_styles()
         self.log.configure(background=pal["inputbg"], foreground=pal["inputfg"], insertbackground=pal["fg"])
         self.theme_btn.configure(text="โหมดสว่าง" if s.theme == "dark" else "โหมดมืด")
         self.save_enabled.set(s.save_enabled)
@@ -627,7 +669,8 @@ class App:
             self.status.configure(text="●  พร้อมใช้งาน")
         elif state == "starting":
             self.btn_start.configure(text="■   หยุด", bootstyle=DANGER)
-            self.status.configure(text="●  กำลังเปิด Chrome…")
+            self.status.configure(text="●  กำลังเชื่อมต่อ Chrome ที่เปิดอยู่…" if self.use_open_chrome.get()
+                                  else "●  กำลังเปิด Chrome…")
         elif state == "running":
             self.btn_start.configure(text="■   หยุด", bootstyle=DANGER)
             self.status.configure(text="●  กำลังแปล — เลื่อนอ่านได้เลย")
@@ -736,6 +779,7 @@ class App:
         s.source_lang = _code(SOURCE_LANGS, self.src.get())
         s.target_lang = _code(TARGET_LANGS, self.tgt.get())
         s.engine = _code(ENGINES, self.engine.get())
+        s.browser_mode = "attach" if self.use_open_chrome.get() else "own"
         self._push_save_opts()
         try:
             s.save()
@@ -753,7 +797,7 @@ class App:
         if self.session and self.session.running:
             return
         s = self._collect_settings()
-        if not s.last_url:
+        if not s.last_url and s.browser_mode != "attach":   # attach mode: no link = the tab in front
             Messagebox.show_error("กรุณาวางลิงก์ตอนที่จะอ่านก่อน", "ยังไม่มีลิงก์", parent=self.root)
             return
         url = self._normalize_url(s.last_url)
@@ -791,6 +835,73 @@ class App:
         if self.session:
             self.session.toggle_original()
 
+    def show_attach_guide(self, why: str = ""):
+        """How to let the app use the Chrome that is already open (Chrome 144+, once per browser)."""
+        from pcm.attach import INSPECT_URL
+        if self._guide is not None and self._guide.winfo_exists():
+            self._guide.lift()
+            return
+        w = self._guide = ttk.Toplevel(title="ใช้ Chrome ที่เปิดอยู่", resizable=(False, False))
+        w.transient(self.root)
+        body = ttk.Frame(w, padding=(22, 18))
+        body.pack(fill=BOTH, expand=True)
+        ttk.Label(body, text="ใช้ Chrome ที่เปิดอยู่", font=(UI_FONT, 15, "bold")).pack(anchor=W)
+        reason = {"missing": "ต้องเปิดการอนุญาตใน Chrome ก่อน (ทำครั้งเดียว)",
+                  "stale": "ไม่พบ Chrome ที่เปิดการอนุญาตไว้ — เปิด Chrome ก่อน หรือติ๊กอนุญาตอีกครั้ง"}.get(why, "")
+        if reason:
+            ttk.Label(body, text=reason, bootstyle=WARNING, wraplength=540, justify=LEFT).pack(anchor=W, pady=(4, 0))
+        steps = ttk.Frame(body)
+        steps.pack(fill=X, pady=(12, 0))
+        steps.columnconfigure(1, weight=1)
+
+        def step(row, n, text):
+            ttk.Label(steps, text=f" {n} ", font=(UI_FONT, 10, "bold"), bootstyle=(INVERSE, PRIMARY)).grid(
+                row=row, column=0, sticky=NW, pady=(6, 0), padx=(0, 10))
+            ttk.Label(steps, text=text, wraplength=500, justify=LEFT).grid(row=row, column=1, sticky=W, pady=(6, 0))
+
+        step(0, 1, "เปิด Chrome แล้ววางลิงก์นี้ในแถบที่อยู่ กด Enter")
+        link = ttk.Frame(steps)
+        link.grid(row=1, column=1, sticky=EW, pady=(6, 0))
+        link.columnconfigure(0, weight=1)
+        field = ttk.Entry(link, font=(UI_FONT, 11))
+        field.insert(0, INSPECT_URL)
+        field.configure(state="readonly")
+        field.grid(row=0, column=0, sticky=EW, ipady=2)
+        copied = ttk.Label(steps, text="คัดลอกแล้ว — ไปที่ Chrome แล้ววางในแถบที่อยู่ (Ctrl+V) กด Enter",
+                           bootstyle=SUCCESS, wraplength=500, justify=LEFT)
+
+        def copy():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(INSPECT_URL)
+            copied.grid(row=2, column=1, sticky=W, pady=(4, 0))
+
+        ttk.Button(link, text="คัดลอกลิงก์", bootstyle=PRIMARY, command=copy).grid(row=0, column=1, padx=(8, 0))
+        step(3, 2, "ติ๊กช่อง \"Allow remote debugging for this browser instance\" (ทำครั้งเดียว ใช้ได้จนกว่าจะเอาติ๊กออก)")
+        step(4, 3, "กลับไปที่แท็บมังงะ แล้วกด \"เริ่มอ่านและแปล\" ในแอปนี้")
+        step(5, 4, "Chrome จะถาม \"Allow remote debugging?\" — กด Allow (อนุญาต) ด้วยเมาส์ (Chrome ถามทุกครั้งที่เริ่ม)")
+        ttk.Label(body, style="Muted.TLabel", wraplength=540, justify=LEFT, text=(
+            "• ต้องใช้ Chrome 144 ขึ้นไป  • แอปเปิดลิงก์ chrome:// ให้ไม่ได้ (Chrome ไม่ยอม) จึงต้องวางเอง\n"
+            "• ระหว่างแปล Chrome จะขึ้นแถบ \"Chrome is being controlled by automated test software\" เป็นเรื่องปกติ "
+            "และหายไปเมื่อกดหยุด — แอปไม่ปิด Chrome หรือแท็บของคุณ\n"
+            "• ถ้าติ๊กแล้วยังใช้ไม่ได้ องค์กรอาจปิดความสามารถนี้ไว้ (นโยบาย RemoteDebuggingAllowed)\n"
+            "• Microsoft Edge: ใช้ edge://inspect/#remote-debugging แทน (ถ้ามีตัวเลือกนี้)")).pack(anchor=W, pady=(14, 0))
+        bar = ttk.Frame(body)
+        bar.pack(fill=X, pady=(16, 0))
+
+        def retry():
+            w.destroy()
+            if self._state == "idle":
+                self.use_open_chrome.set(True)
+                self._sync_mode()
+                self.start()
+
+        ttk.Button(bar, text="ลองอีกครั้ง", bootstyle=PRIMARY, command=retry, width=12).pack(side=RIGHT)
+        ttk.Button(bar, text="ปิด", bootstyle="primary-outline", command=w.destroy, width=8).pack(side=RIGHT, padx=8)
+        w.update_idletasks()
+        x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - w.winfo_width()) // 2)
+        y = self.root.winfo_rooty() + 60
+        w.geometry(f"+{x}+{y}")
+
     def _drain(self):
         try:
             for _ in range(200):
@@ -818,6 +929,16 @@ class App:
                 elif kind == "stopped":
                     self._set_state("idle")
                     self.status.configure(text="●  หยุดแล้ว")
+                elif kind == "status":
+                    if self._state in ("starting", "running"):
+                        self.status.configure(text="●  " + ev[1])
+                elif kind == "attach_failed":
+                    _, why, msg = ev
+                    if why in ("missing", "stale"):
+                        self.root.after(10, self.show_attach_guide, why)
+                    else:   # after this drain, so the window is idle again behind the message
+                        self.root.after(10, lambda m=msg: Messagebox.show_warning(
+                            m, "ใช้ Chrome ที่เปิดอยู่ไม่ได้", parent=self.root))
                 elif kind == "call":
                     ev[1]()
         except queue.Empty:

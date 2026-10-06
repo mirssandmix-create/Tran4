@@ -87,6 +87,9 @@ ENGINE_DEFAULTS = {
 
 THEMES = [("dark", "มืด"), ("light", "สว่าง")]
 
+# "own": the app opens its own Chrome; "attach": use the Chrome the user already has open
+BROWSER_MODES = ("own", "attach")
+
 
 @dataclass
 class Settings:
@@ -123,7 +126,8 @@ class Settings:
     # look
     theme: str = "dark"
     # browser
-    keep_browser_profile: bool = True  # remember logins / Cloudflare clearance between runs
+    browser_mode: str = "own"          # one of BROWSER_MODES
+    keep_browser_profile: bool = True  # remember logins / Cloudflare clearance between runs (own mode)
     extra: dict = field(default_factory=dict)
 
     @property
@@ -170,6 +174,8 @@ class Settings:
             except (TypeError, ValueError):
                 continue
             setattr(s, f.name, v)
+        if s.browser_mode not in BROWSER_MODES:
+            s.browser_mode = "own"
         return s
 
     def save(self) -> None:
